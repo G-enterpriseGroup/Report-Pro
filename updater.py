@@ -7,7 +7,7 @@ from google.oauth2.service_account import Credentials
 
 # --------- Env / defaults ---------
 SHEET_URL      = os.environ.get("https://docs.google.com/spreadsheets/d/1Km_RB87aNI0TOD16Q8PFiijaa4wDxLx_He2P59g2Q4w/edit?usp=sharing", "").strip()
-WORKSHEET_NAME = os.environ.get("Report Pro", "Sheet1").strip()
+WORKSHEET_NAME = os.environ.get("Report Pro", "Copy").strip()
 
 CELL_TICKER = "A2"
 CELL_OCC    = "A3"
