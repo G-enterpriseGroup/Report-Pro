@@ -1,5 +1,9 @@
-gspread
-pandas
-yfinance
 gspread-formatting
-gspread-dataframe
+yfinance
+gspread
+gspread_dataframe
+pandas
+python-dateutil
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
