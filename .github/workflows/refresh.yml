@@ -2,8 +2,8 @@ name: Update Options Sheet
 
 on:
   schedule:
-    - cron: "*/5 * * * *"   # every 5 minutes
-  workflow_dispatch:        # allow manual run from Actions tab
+    - cron: "*/2 13-19 * * 1-5"   # every 2 minutes, 9:00–15:59 ET (13–19 UTC, weekdays)
+  workflow_dispatch:
 
 jobs:
   run-updater:
