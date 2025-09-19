@@ -1,14 +1,15 @@
-import os, re
+import os, re, json
 import pandas as pd
 import yfinance as yf
 import gspread
 from gspread_dataframe import set_with_dataframe
 from google.oauth2.service_account import Credentials
 
-# --------- Env / defaults ---------
-SHEET_URL      = os.environ.get("https://docs.google.com/spreadsheets/d/1Km_RB87aNI0TOD16Q8PFiijaa4wDxLx_He2P59g2Q4w/edit?usp=sharing", "").strip()
-WORKSHEET_NAME = os.environ.get("Report Pro", "Copy").strip()
+# --------- Read required secrets (from GitHub Actions) ---------
+SHEET_URL      = os.environ["SHEET_URL"].strip()                 # set in repo secrets
+WORKSHEET_NAME = os.environ.get("WORKSHEET_NAME", "Copy").strip()# set in repo secrets
 
+# --------- A1 locations ---------
 CELL_TICKER = "A2"
 CELL_OCC    = "A3"
 
@@ -20,14 +21,22 @@ OUT_PUTS_HEADER_CELL  = "C7"
 
 # --------- Google auth (Service Account JSON in GOOGLE_CREDENTIALS) ---------
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
-creds_info = os.environ["GOOGLE_CREDENTIALS"]  # required
-creds = Credentials.from_service_account_info(
-    __import__("json").loads(creds_info),
-    scopes=SCOPES
-)
+creds_info = json.loads(os.environ["GOOGLE_CREDENTIALS"])
+creds = Credentials.from_service_account_info(creds_info, scopes=SCOPES)
 gc = gspread.authorize(creds)
-ws = gc.open_by_url(SHEET_URL).worksheet(WORKSHEET_NAME)
 
+def _sheet_id(url_or_id: str) -> str:
+    s = url_or_id.strip().strip('"').strip("'")
+    m = re.search(r"/spreadsheets/d/([A-Za-z0-9-_]+)", s)
+    if m: return m.group(1)
+    if re.fullmatch(r"[A-Za-z0-9-_]{20,}", s): return s  # raw ID
+    raise ValueError(f"Could not parse Sheet ID from SHEET_URL='{s[:80]}'")
+
+SHEET_ID = _sheet_id(SHEET_URL)
+sh = gc.open_by_key(SHEET_ID)
+ws = sh.worksheet(WORKSHEET_NAME)
+
+# --------- Helpers ---------
 def parse_occ(contract: str):
     m = re.match(r"^([A-Za-z]+)(\d{2})(\d{2})(\d{2})([CP])(\d{8})$", (contract or "").strip())
     if not m: return None
@@ -39,8 +48,8 @@ def parse_occ(contract: str):
 
 def _fmt_mid(bid, ask):
     try:
-        if pd.notna(bid) and pd.notna(ask) and float(bid)>0 and float(ask)>0:
-            return round((float(bid)+float(ask))/2, 4)
+        if pd.notna(bid) and pd.notna(ask) and float(bid) > 0 and float(ask) > 0:
+            return round((float(bid) + float(ask)) / 2, 4)
     except Exception:
         pass
     return ""
@@ -62,8 +71,8 @@ def a1_to_rowcol(a1: str):
     col_str = ''.join(filter(str.isalpha, a1))
     row_str = ''.join(filter(str.isdigit, a1))
     row = int(row_str); col = 0
-    for i,c in enumerate(reversed(col_str.upper())):
-        col += (ord(c) - 64) * (26**i)
+    for i, c in enumerate(reversed(col_str.upper())):
+        col += (ord(c) - 64) * (26 ** i)
     return row, col
 
 def lookup_occ_with_yf(occ: str):
@@ -78,7 +87,7 @@ def lookup_occ_with_yf(occ: str):
             chain = t.option_chain(exp)
         except Exception:
             continue
-        pool = chain.puts if meta["type"]=="P" else chain.calls
+        pool = chain.puts if meta["type"] == "P" else chain.calls
         exact = pool[pool["contractSymbol"] == occ]
         if not exact.empty:
             r = exact.iloc[0].to_dict()
@@ -111,8 +120,8 @@ if occ:
     row, err = lookup_occ_with_yf(occ)
     if row:
         ws.update(OUT_OCC_VALUES_CELL, [[
-            row["contractSymbol"],row["underlying"],row["expiry"],row["type"],row["strike"],
-            row["last"],row["bid"],row["ask"],row["mid"],row["oi"],row["iv"],row["volume"],row["itm"],row["currency"]
+            row["contractSymbol"], row["underlying"], row["expiry"], row["type"], row["strike"],
+            row["last"], row["bid"], row["ask"], row["mid"], row["oi"], row["iv"], row["volume"], row["itm"], row["currency"]
         ]])
     else:
         ws.update(OUT_OCC_VALUES_CELL, [[err]])
@@ -130,7 +139,7 @@ if ticker:
         chain = t.option_chain(nearest)
         puts_df = normalize_puts(chain.puts)
         ws.update(OUT_PUTS_HEADER_CELL, [[f"Puts @ {nearest}"]])
-        r,c = a1_to_rowcol(OUT_PUTS_HEADER_CELL)
+        r, c = a1_to_rowcol(OUT_PUTS_HEADER_CELL)
         set_with_dataframe(ws, puts_df, row=r+1, col=c)
     else:
         ws.update(OUT_EXPS_START_CELL, [["No expirations available"]])
