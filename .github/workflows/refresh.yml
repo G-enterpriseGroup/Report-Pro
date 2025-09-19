@@ -2,7 +2,7 @@ name: Update Options Sheet
 
 on:
   schedule:
-    - cron: "*/2 13-19 * * 1-5"   # every 2 minutes, 9:00–15:59 ET (13–19 UTC, weekdays)
+    - cron: "*/55 13-19 * * 1-5"   # every 2 minutes, 9:00–15:59 ET (13–19 UTC, weekdays)
   workflow_dispatch:
 
 jobs:
