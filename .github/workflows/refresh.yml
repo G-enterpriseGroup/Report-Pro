@@ -2,24 +2,16 @@ name: Update Options Sheet
 
 on:
   schedule:
-    - cron: "*/5 * * * *"   # every 5 minutes (GitHub minimum)
-  workflow_dispatch:
-    inputs:
-      SHEET_URL:
-        description: "Google Sheet URL"
-        required: false
-        default: ""
-      WORKSHEET_NAME:
-        description: "Worksheet (tab) name"
-        required: false
-        default: "Sheet1"
+    - cron: "*/5 * * * *"   # every 5 minutes
+  workflow_dispatch:        # allow manual run from Actions tab
 
 jobs:
   run-updater:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+
     steps:
-      - name: Checkout
+      - name: Checkout repo
         uses: actions/checkout@v4
 
       - name: Set up Python
@@ -27,12 +19,12 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install deps
+      - name: Install dependencies
         run: pip install -r requirements.txt
 
       - name: Run updater
         env:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
-          SHEET_URL: ${{ github.event.inputs.SHEET_URL != '' && github.event.inputs.SHEET_URL || secrets.SHEET_URL }}
-          WORKSHEET_NAME: ${{ github.event.inputs.WORKSHEET_NAME != '' && github.event.inputs.WORKSHEET_NAME || secrets.WORKSHEET_NAME }}
+          SHEET_URL: ${{ secrets.SHEET_URL }}
+          WORKSHEET_NAME: ${{ secrets.WORKSHEET_NAME }}
         run: python updater.py
