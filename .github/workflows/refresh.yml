@@ -7,6 +7,7 @@ on:
 
 jobs:
   run-updater:
+    if: ${{ github.event_name == 'workflow_dispatch' }}  # TEMP: manual only — delete this line to resume schedule
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
