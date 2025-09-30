@@ -7,7 +7,6 @@ on:
 
 jobs:
   run-updater:
-    if: ${{ false }}   # PAUSED — delete this line to resume
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
