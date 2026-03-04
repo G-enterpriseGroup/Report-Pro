@@ -24,6 +24,7 @@ except Exception:
 
 # ========= Config via GitHub Actions secrets =========
 SHEET_URL       = os.environ["SHEET_URL"].strip()                    # required
+SHEET_URL2      = os.environ.get("SHEET_URL2", "").strip()           # optional second sheet URL
 WORKSHEET_NAME  = os.environ.get("WORKSHEET_NAME", "Copy").strip()   # optional
 
 # ========= Cell anchors =========
