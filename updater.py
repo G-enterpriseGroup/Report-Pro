@@ -1,6 +1,6 @@
 # updater.py
 import os, re, json, math, time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, List
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -28,13 +28,15 @@ WORKSHEET_NAME  = os.environ.get("WORKSHEET_NAME", "Copy").strip()
 CELL_TICKER = "A2"
 CELL_OCC    = "A3"
 
-OUT_OCC_HEADER_CELL   = "A4"
-OUT_OCC_VALUES_CELL   = "A5"
-OUT_EXPS_HEADER_CELL  = "A7"
-OUT_EXPS_START_CELL   = "A8"
+OUT_OCC_HEADER_CELL      = "A4"
+OUT_OCC_VALUES_CELL      = "A5"
+OUT_EXPS_HEADER_CELL     = "A7"
+OUT_EXPS_START_CELL      = "A8"
 
-OUT_PUTS_HEADER_CELL  = "C7"
-OUT_CALLS_HEADER_CELL = "N7"
+OUT_SUMMARY_HEADER_CELL  = "C4"
+OUT_SUMMARY_VALUES_CELL  = "C5"
+
+OUT_ALL_HEADER_CELL      = "C7"   # main master table starts here; rows 1-2 are untouched
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 creds_info = json.loads(os.environ["GOOGLE_CREDENTIALS"])
@@ -104,6 +106,9 @@ def safe_ws_update(ws, range_name: str, values):
     safe_values = [[json_safe(v) for v in row] for row in values]
     return with_retries(ws.update, range_name=range_name, values=safe_values, retries=3, delay=0.7)
 
+def clear_range(ws, start_a1: str, end_col: str = "Z", end_row: int = 5000):
+    with_retries(ws.batch_clear, [f"{start_a1}:{end_col}{end_row}"], retries=2, delay=0.6)
+
 def parse_occ(contract: str) -> Optional[Dict[str, Any]]:
     m = re.match(r"^([A-Za-z]+)(\d{2})(\d{2})(\d{2})([CP])(\d{8})$", (contract or "").strip())
     if not m:
@@ -127,12 +132,13 @@ def _fmt_mid(bid, ask):
         pass
     return ""
 
-def normalize_option_side(df: pd.DataFrame) -> pd.DataFrame:
+def normalize_option_side(df: pd.DataFrame, expiry: str, opt_type: str) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame(columns=[
-            "contractSymbol","strike","last","bid","ask","mid",
+            "expiry","type","contractSymbol","strike","last","bid","ask","mid",
             "openInterest","impliedVol","volume","inTheMoney"
         ])
+
     out = df.copy()
     required = [
         "contractSymbol","strike","lastPrice","bid","ask",
@@ -142,14 +148,18 @@ def normalize_option_side(df: pd.DataFrame) -> pd.DataFrame:
         if col not in out.columns:
             out[col] = pd.NA
 
+    out["expiry"] = expiry
+    out["type"] = opt_type
     out["mid"] = out.apply(lambda r: _fmt_mid(r.get("bid"), r.get("ask")), axis=1)
+
     out = out.rename(columns={
         "lastPrice": "last",
         "impliedVolatility": "impliedVol",
     })[[
-        "contractSymbol","strike","last","bid","ask","mid",
+        "expiry","type","contractSymbol","strike","last","bid","ask","mid",
         "openInterest","impliedVol","volume","inTheMoney"
     ]]
+
     return df_json_safe(out)
 
 def lookup_occ_with_yf(occ: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
@@ -196,7 +206,49 @@ def lookup_occ_with_yf(occ: str) -> Tuple[Optional[Dict[str, Any]], Optional[str
 
     return None, "Contract not found"
 
-def theme_option_table(ws, start_row: int, start_col: int, n_rows: int, n_cols: int, title_text: str):
+def fetch_all_contracts_for_ticker(ticker: str) -> Tuple[List[str], pd.DataFrame]:
+    t = yf.Ticker(ticker)
+    expiries = list(getattr(t, "options", []) or [])
+    if not expiries:
+        return [], pd.DataFrame(columns=[
+            "expiry","type","contractSymbol","strike","last","bid","ask","mid",
+            "openInterest","impliedVol","volume","inTheMoney"
+        ])
+
+    all_parts = []
+
+    for exp in sorted(expiries):
+        try:
+            chain = with_retries(t.option_chain, exp, retries=2, delay=0.6)
+        except Exception:
+            continue
+
+        calls_df = normalize_option_side(chain.calls, exp, "CALL")
+        puts_df  = normalize_option_side(chain.puts,  exp, "PUT")
+
+        if not calls_df.empty:
+            all_parts.append(calls_df)
+        if not puts_df.empty:
+            all_parts.append(puts_df)
+
+    if not all_parts:
+        return expiries, pd.DataFrame(columns=[
+            "expiry","type","contractSymbol","strike","last","bid","ask","mid",
+            "openInterest","impliedVol","volume","inTheMoney"
+        ])
+
+    master = pd.concat(all_parts, ignore_index=True)
+    master["type_sort"] = master["type"].map({"CALL": 0, "PUT": 1}).fillna(9)
+    master["strike_num"] = pd.to_numeric(master["strike"], errors="coerce")
+
+    master = master.sort_values(
+        by=["expiry", "type_sort", "strike_num", "contractSymbol"],
+        ascending=[True, True, True, True]
+    ).drop(columns=["type_sort", "strike_num"], errors="ignore")
+
+    return expiries, df_json_safe(master)
+
+def theme_table(ws, start_row: int, start_col: int, n_rows: int, n_cols: int, title_text: str):
     if not _HAS_FMT or n_cols <= 0:
         return
 
@@ -225,7 +277,77 @@ def theme_option_table(ws, start_row: int, start_col: int, n_rows: int, n_cols: 
     except Exception:
         pass
 
-def write_option_table(ws, header_cell: str, title_text: str, df: pd.DataFrame):
+    header_row = start_row + 1
+    try:
+        format_cell_range(
+            ws,
+            f"{start_col_a1}{header_row}:{end_col_a1}{header_row}",
+            CellFormat(
+                backgroundColor=Color(0.18, 0.24, 0.38),
+                textFormat=TextFormat(bold=True, fontSize=10, foregroundColor=Color(1, 1, 1))
+            )
+        )
+    except Exception:
+        pass
+
+    data_start = start_row + 2
+    data_end   = start_row + n_rows
+
+    if data_end >= data_start:
+        try:
+            add_banding(
+                ws,
+                GridRange(
+                    worksheet=ws,
+                    start_row_index=data_start - 1,
+                    end_row_index=data_end,
+                    start_column_index=start_col - 1,
+                    end_column_index=start_col - 1 + n_cols
+                ),
+                theme=BandingTheme.BLUE
+            )
+        except Exception:
+            pass
+
+    numeric_cols = {
+        "strike": 4,
+        "last": 5,
+        "bid": 6,
+        "ask": 7,
+        "mid": 8,
+        "openInterest": 9,
+        "impliedVol": 10,
+        "volume": 11
+    }
+
+    def col_range(col_idx: int) -> str:
+        abs_col = start_col + col_idx - 1
+        a1 = col_to_a1(abs_col)
+        return f"{a1}{data_start}:{a1}{data_end}"
+
+    try:
+        money_fmt = CellFormat(numberFormat=NumberFormat(type="NUMBER", pattern="#,##0.00"))
+        for colname in ["strike", "last", "bid", "ask", "mid"]:
+            if colname in numeric_cols:
+                format_cell_range(ws, col_range(numeric_cols[colname]), money_fmt)
+
+        int_fmt = CellFormat(numberFormat=NumberFormat(type="NUMBER", pattern="#,##0"))
+        for colname in ["openInterest", "volume"]:
+            if colname in numeric_cols:
+                format_cell_range(ws, col_range(numeric_cols[colname]), int_fmt)
+
+        pct_fmt = CellFormat(numberFormat=NumberFormat(type="PERCENT", pattern="0.00%"))
+        if "impliedVol" in numeric_cols:
+            format_cell_range(ws, col_range(numeric_cols["impliedVol"]), pct_fmt)
+    except Exception:
+        pass
+
+    try:
+        set_frozen(ws, rows=2)
+    except Exception:
+        pass
+
+def write_master_table(ws, header_cell: str, title_text: str, df: pd.DataFrame):
     title_row, title_col = a1_to_rowcol(header_cell)
     df = df_json_safe(df)
 
@@ -236,9 +358,10 @@ def write_option_table(ws, header_cell: str, title_text: str, df: pd.DataFrame):
 
     safe_ws_update(ws, header_cell, [[title_text]])
     with_retries(set_with_dataframe, ws, df, row=title_row + 1, col=title_col, retries=2, delay=0.6)
+
     n_rows = 1 + len(df)
     n_cols = df.shape[1]
-    theme_option_table(ws, start_row=title_row, start_col=title_col, n_rows=n_rows, n_cols=n_cols, title_text=title_text)
+    theme_table(ws, start_row=title_row, start_col=title_col, n_rows=n_rows, n_cols=n_cols, title_text=title_text)
 
 def run_for_sheet(sheet_url: str, label: str):
     print(f"--- START {label} ---")
@@ -256,12 +379,17 @@ def run_for_sheet(sheet_url: str, label: str):
 
     now_local = datetime.now(ZoneInfo("America/Indiana/Indianapolis"))
     ts_str = now_local.strftime("Updated: %I:%M %p — %B %d, %Y (ET)").lstrip("0")
+
+    # keep row 1 and 2 safe except A1 timestamp
     safe_ws_update(ws, "A1", [[ts_str]])
 
     ticker = (ws.acell(CELL_TICKER).value or "").strip().upper()
     occ    = (ws.acell(CELL_OCC).value or "").strip().upper()
     print(f"{label} ticker in A2: {ticker}")
     print(f"{label} occ in A3: {occ}")
+
+    # clear only output area below row 3
+    clear_range(ws, "A4", end_col="Z", end_row=5000)
 
     headers = [[
         "ContractSymbol","Underlying","Expiry","Type","Strike","Last",
@@ -282,28 +410,33 @@ def run_for_sheet(sheet_url: str, label: str):
     else:
         safe_ws_update(ws, OUT_OCC_VALUES_CELL, [["(Put OCC in A3)"]])
 
-    if ticker:
-        t = yf.Ticker(ticker)
-        expiries = list(getattr(t, "options", []) or [])
-        safe_ws_update(ws, OUT_EXPS_HEADER_CELL, [["Expirations (ISO)"]])
+    safe_ws_update(ws, OUT_SUMMARY_HEADER_CELL, [["Ticker", "Expirations", "Total Contracts", "Calls", "Puts"]])
 
+    if ticker:
+        expiries, master_df = fetch_all_contracts_for_ticker(ticker)
+
+        safe_ws_update(ws, OUT_EXPS_HEADER_CELL, [["Expirations (ISO)"]])
         if expiries:
             safe_ws_update(ws, OUT_EXPS_START_CELL, [[d] for d in expiries])
 
-            nearest = sorted(expiries)[0]
-            chain = with_retries(t.option_chain, nearest, retries=2, delay=0.6)
+        total_contracts = len(master_df)
+        call_count = int((master_df["type"] == "CALL").sum()) if not master_df.empty else 0
+        put_count  = int((master_df["type"] == "PUT").sum()) if not master_df.empty else 0
 
-            puts_df = normalize_option_side(chain.puts)
-            calls_df = normalize_option_side(chain.calls)
+        safe_ws_update(ws, OUT_SUMMARY_VALUES_CELL, [[
+            ticker,
+            len(expiries),
+            total_contracts,
+            call_count,
+            put_count
+        ]])
 
-            write_option_table(ws, OUT_PUTS_HEADER_CELL, f"Puts @ {nearest}", puts_df)
-            write_option_table(ws, OUT_CALLS_HEADER_CELL, f"Calls @ {nearest}", calls_df)
-            print(f"{label} wrote puts/calls for {ticker} @ {nearest}")
-        else:
-            safe_ws_update(ws, OUT_EXPS_START_CELL, [["No expirations available"]])
-            print(f"{label} no expirations")
+        write_master_table(ws, OUT_ALL_HEADER_CELL, f"All Option Contracts for {ticker}", master_df)
+        print(f"{label} wrote all contracts for {ticker}: {total_contracts} rows across {len(expiries)} expirations")
     else:
         safe_ws_update(ws, OUT_EXPS_HEADER_CELL, [["(Put Ticker in A2)"]])
+        safe_ws_update(ws, OUT_SUMMARY_VALUES_CELL, [["", "", "", "", ""]])
+        safe_ws_update(ws, OUT_ALL_HEADER_CELL, [["(No ticker in A2)"]])
         print(f"{label} no ticker in A2")
 
     print(f"--- END {label} ---")
