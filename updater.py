@@ -65,7 +65,6 @@ def a1_to_rowcol(a1: str) -> Tuple[int, int]:
     return row, col
 
 def col_to_a1(col_index: int) -> str:
-    # 1 -> A, 2 -> B ...
     s = ""
     n = col_index
     while n:
@@ -74,7 +73,6 @@ def col_to_a1(col_index: int) -> str:
     return s
 
 def json_safe(x: Any) -> Any:
-    """Convert to JSON/Sheets-safe primitive."""
     if x is None:
         return ""
     if isinstance(x, (np.generic,)):
@@ -106,6 +104,10 @@ def with_retries(fn, *args, retries: int = 3, delay: float = 0.8, **kwargs):
             raise
     if last_ex:
         raise last_ex
+
+def safe_ws_update(ws, range_name: str, values):
+    safe_values = [[json_safe(v) for v in row] for row in values]
+    return with_retries(ws.update, range_name=range_name, values=safe_values, retries=3, delay=0.7)
 
 # ========= Domain helpers =========
 def parse_occ(contract: str) -> Optional[Dict[str, Any]]:
@@ -200,27 +202,14 @@ def lookup_occ_with_yf(occ: str) -> Tuple[Optional[Dict[str, Any]], Optional[str
 
     return None, "Contract not found"
 
-def safe_ws_update(ws, range_name: str, values):
-    safe_values = [[json_safe(v) for v in row] for row in values]
-    return with_retries(ws.update, range_name=range_name, values=safe_values, retries=3, delay=0.7)
-
 # ========= Theming =========
 def theme_option_table(ws, start_row: int, start_col: int, n_rows: int, n_cols: int, title_text: str):
-    """
-    Apply a clean visual theme to an option section:
-    - Merge & style the title row (start_row).
-    - Bold header row (start_row+1).
-    - Alternating banding for data rows (start_row+2 ..).
-    - Number formats for numeric columns.
-    - Freeze rows to keep the section header visible.
-    """
     if not _HAS_FMT or n_cols <= 0:
         return
 
     start_col_a1 = col_to_a1(start_col)
     end_col_a1   = col_to_a1(start_col + n_cols - 1)
 
-    # Title merge + style
     try:
         ws.merge_cells(start_row, start_col, start_row, start_col + n_cols - 1)
     except Exception:
@@ -257,7 +246,7 @@ def theme_option_table(ws, start_row: int, start_col: int, n_rows: int, n_cols: 
         pass
 
     data_start = start_row + 2
-    data_end   = start_row + n_rows  # includes header row + data rows
+    data_end   = start_row + n_rows
 
     if data_end >= data_start:
         try:
@@ -315,7 +304,6 @@ def theme_option_table(ws, start_row: int, start_col: int, n_rows: int, n_cols: 
 
 def write_option_table(ws, header_cell: str, title_text: str, df: pd.DataFrame):
     title_row, title_col = a1_to_rowcol(header_cell)
-
     df = df_json_safe(df)
 
     if df.empty:
@@ -326,33 +314,29 @@ def write_option_table(ws, header_cell: str, title_text: str, df: pd.DataFrame):
     safe_ws_update(ws, header_cell, [[title_text]])
     with_retries(set_with_dataframe, ws, df, row=title_row + 1, col=title_col, retries=2, delay=0.6)
 
-    n_rows = 1 + len(df)   # header row + data rows
+    n_rows = 1 + len(df)
     n_cols = df.shape[1]
     theme_option_table(ws, start_row=title_row, start_col=title_col, n_rows=n_rows, n_cols=n_cols, title_text=title_text)
 
-# ========= Main =========
-def main():
-    sheet_id = _sheet_id(SHEET_URL)
+# ========= Per-sheet runner =========
+def run_for_sheet(sheet_url: str):
+    sheet_id = _sheet_id(sheet_url)
     sh = with_retries(gc.open_by_key, sheet_id, retries=3, delay=0.7)
     ws = with_retries(sh.worksheet, WORKSHEET_NAME, retries=3, delay=0.7)
 
-    # A1 timestamp (America/Indiana/Indianapolis), 12-hour clock
     now_local = datetime.now(ZoneInfo("America/Indiana/Indianapolis"))
     ts_str = now_local.strftime("Updated: %I:%M %p — %B %d, %Y (ET)").lstrip("0")
     safe_ws_update(ws, "A1", [[ts_str]])
 
-    # Inputs
     ticker = (ws.acell(CELL_TICKER).value or "").strip().upper()
     occ    = (ws.acell(CELL_OCC).value or "").strip().upper()
 
-    # OCC snapshot header
     headers = [[
         "ContractSymbol","Underlying","Expiry","Type","Strike","Last",
         "Bid","Ask","Mid","OpenInterest","ImpliedVol","Volume","InTheMoney","Currency"
     ]]
     safe_ws_update(ws, OUT_OCC_HEADER_CELL, headers)
 
-    # OCC snapshot value
     if occ:
         row, err = lookup_occ_with_yf(occ)
         if row:
@@ -366,7 +350,6 @@ def main():
     else:
         safe_ws_update(ws, OUT_OCC_VALUES_CELL, [["(Put OCC in A3)"]])
 
-    # Expirations + nearest puts/calls for ticker
     if ticker:
         t = yf.Ticker(ticker)
         expiries = list(getattr(t, "options", []) or [])
@@ -388,7 +371,14 @@ def main():
     else:
         safe_ws_update(ws, OUT_EXPS_HEADER_CELL, [["(Put Ticker in A2)"]])
 
-    print("Done (puts + calls).")
+# ========= Main =========
+def main():
+    run_for_sheet(SHEET_URL)
+
+    if SHEET_URL2:
+        run_for_sheet(SHEET_URL2)
+
+    print("Done (Sheet 1 + Sheet 2 if provided).")
 
 if __name__ == "__main__":
     main()
