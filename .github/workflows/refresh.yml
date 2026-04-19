@@ -2,7 +2,7 @@ name: Update Options Sheet
 
 on:
   schedule:
-    - cron: "*/55 13-19 * * 1-5"   # every 2 minutes, 9:00–15:59 ET (13–19 UTC, weekdays)
+    - cron: "*/55 13-19 * * 1-5"   # every 55 minutes, 9:00–15:59 ET, weekdays
   workflow_dispatch:
 
 jobs:
@@ -27,5 +27,6 @@ jobs:
         env:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
           SHEET_URL: ${{ secrets.SHEET_URL }}
+          SHEET_URL2: ${{ secrets.SHEET_URL2 }}
           WORKSHEET_NAME: ${{ secrets.WORKSHEET_NAME }}
         run: python updater.py
