@@ -12,7 +12,6 @@ from gspread_dataframe import set_with_dataframe
 from google.oauth2.service_account import Credentials
 from google.auth.exceptions import TransportError
 
-# ---- OPTIONAL but recommended for theming ----
 try:
     from gspread_formatting import (
         CellFormat, Color, TextFormat, NumberFormat,
@@ -22,12 +21,10 @@ try:
 except Exception:
     _HAS_FMT = False
 
-# ========= Config via GitHub Actions secrets =========
-SHEET_URL       = os.environ["SHEET_URL"].strip()                    # required
-SHEET_URL2      = os.environ.get("SHEET_URL2", "").strip()           # optional second sheet URL
-WORKSHEET_NAME  = os.environ.get("WORKSHEET_NAME", "Copy").strip()   # optional
+SHEET_URL       = os.environ["SHEET_URL"].strip()
+SHEET_URL2      = os.environ.get("SHEET_URL2", "").strip()
+WORKSHEET_NAME  = os.environ.get("WORKSHEET_NAME", "Copy").strip()
 
-# ========= Cell anchors =========
 CELL_TICKER = "A2"
 CELL_OCC    = "A3"
 
@@ -36,16 +33,14 @@ OUT_OCC_VALUES_CELL   = "A5"
 OUT_EXPS_HEADER_CELL  = "A7"
 OUT_EXPS_START_CELL   = "A8"
 
-OUT_PUTS_HEADER_CELL  = "C7"   # Title cell for puts section (table starts on next row)
-OUT_CALLS_HEADER_CELL = "N7"   # Title cell for calls section (table starts on next row)
+OUT_PUTS_HEADER_CELL  = "C7"
+OUT_CALLS_HEADER_CELL = "N7"
 
-# ========= Google auth (Service Account JSON in GOOGLE_CREDENTIALS) =========
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 creds_info = json.loads(os.environ["GOOGLE_CREDENTIALS"])
 creds = Credentials.from_service_account_info(creds_info, scopes=SCOPES)
 gc = gspread.authorize(creds)
 
-# ========= Utilities =========
 def _sheet_id(url_or_id: str) -> str:
     s = url_or_id.strip().strip('"').strip("'")
     m = re.search(r"/spreadsheets/d/([A-Za-z0-9-_]+)", s)
@@ -53,7 +48,7 @@ def _sheet_id(url_or_id: str) -> str:
         return m.group(1)
     if re.fullmatch(r"[A-Za-z0-9-_]{20,}", s):
         return s
-    raise ValueError(f"Could not parse Sheet ID from SHEET_URL='{s[:80]}'")
+    raise ValueError(f"Could not parse Sheet ID from value: {s[:80]}")
 
 def a1_to_rowcol(a1: str) -> Tuple[int, int]:
     col_str = ''.join(filter(str.isalpha, a1))
@@ -109,7 +104,6 @@ def safe_ws_update(ws, range_name: str, values):
     safe_values = [[json_safe(v) for v in row] for row in values]
     return with_retries(ws.update, range_name=range_name, values=safe_values, retries=3, delay=0.7)
 
-# ========= Domain helpers =========
 def parse_occ(contract: str) -> Optional[Dict[str, Any]]:
     m = re.match(r"^([A-Za-z]+)(\d{2})(\d{2})(\d{2})([CP])(\d{8})$", (contract or "").strip())
     if not m:
@@ -202,7 +196,6 @@ def lookup_occ_with_yf(occ: str) -> Tuple[Optional[Dict[str, Any]], Optional[str
 
     return None, "Contract not found"
 
-# ========= Theming =========
 def theme_option_table(ws, start_row: int, start_col: int, n_rows: int, n_cols: int, title_text: str):
     if not _HAS_FMT or n_cols <= 0:
         return
@@ -232,76 +225,6 @@ def theme_option_table(ws, start_row: int, start_col: int, n_rows: int, n_cols: 
     except Exception:
         pass
 
-    header_row = start_row + 1
-    try:
-        format_cell_range(
-            ws,
-            f"{start_col_a1}{header_row}:{end_col_a1}{header_row}",
-            CellFormat(
-                backgroundColor=Color(0.18, 0.24, 0.38),
-                textFormat=TextFormat(bold=True, fontSize=10, foregroundColor=Color(1, 1, 1))
-            )
-        )
-    except Exception:
-        pass
-
-    data_start = start_row + 2
-    data_end   = start_row + n_rows
-
-    if data_end >= data_start:
-        try:
-            add_banding(
-                ws,
-                GridRange(
-                    worksheet=ws,
-                    start_row_index=data_start - 1,
-                    end_row_index=data_end,
-                    start_column_index=start_col - 1,
-                    end_column_index=start_col - 1 + n_cols
-                ),
-                theme=BandingTheme.BLUE
-            )
-        except Exception:
-            pass
-
-    name_to_idx = {
-        "strike": 2,
-        "last": 3,
-        "bid": 4,
-        "ask": 5,
-        "mid": 6,
-        "openInterest": 7,
-        "impliedVol": 8,
-        "volume": 9
-    }
-
-    def col_range(col_idx: int) -> str:
-        abs_col = start_col + col_idx - 1
-        a1 = col_to_a1(abs_col)
-        return f"{a1}{data_start}:{a1}{data_end}"
-
-    try:
-        money_fmt = CellFormat(numberFormat=NumberFormat(type="NUMBER", pattern="#,##0.00"))
-        for colname in ["strike", "last", "bid", "ask", "mid"]:
-            if colname in name_to_idx:
-                format_cell_range(ws, col_range(name_to_idx[colname]), money_fmt)
-
-        int_fmt = CellFormat(numberFormat=NumberFormat(type="NUMBER", pattern="#,##0"))
-        for colname in ["openInterest", "volume"]:
-            if colname in name_to_idx:
-                format_cell_range(ws, col_range(name_to_idx[colname]), int_fmt)
-
-        pct_fmt = CellFormat(numberFormat=NumberFormat(type="PERCENT", pattern="0.00%"))
-        if "impliedVol" in name_to_idx:
-            format_cell_range(ws, col_range(name_to_idx["impliedVol"]), pct_fmt)
-    except Exception:
-        pass
-
-    try:
-        set_frozen(ws, rows=header_row)
-    except Exception:
-        pass
-
 def write_option_table(ws, header_cell: str, title_text: str, df: pd.DataFrame):
     title_row, title_col = a1_to_rowcol(header_cell)
     df = df_json_safe(df)
@@ -313,16 +236,23 @@ def write_option_table(ws, header_cell: str, title_text: str, df: pd.DataFrame):
 
     safe_ws_update(ws, header_cell, [[title_text]])
     with_retries(set_with_dataframe, ws, df, row=title_row + 1, col=title_col, retries=2, delay=0.6)
-
     n_rows = 1 + len(df)
     n_cols = df.shape[1]
     theme_option_table(ws, start_row=title_row, start_col=title_col, n_rows=n_rows, n_cols=n_cols, title_text=title_text)
 
-# ========= Per-sheet runner =========
-def run_for_sheet(sheet_url: str):
+def run_for_sheet(sheet_url: str, label: str):
+    print(f"--- START {label} ---")
+    print(f"{label} URL present? {'YES' if sheet_url else 'NO'}")
+
     sheet_id = _sheet_id(sheet_url)
+    print(f"{label} sheet_id: {sheet_id}")
+
     sh = with_retries(gc.open_by_key, sheet_id, retries=3, delay=0.7)
+    print(f"{label} spreadsheet title: {sh.title}")
+
+    print(f"{label} available tabs: {[ws.title for ws in sh.worksheets()]}")
     ws = with_retries(sh.worksheet, WORKSHEET_NAME, retries=3, delay=0.7)
+    print(f"{label} using worksheet: {ws.title}")
 
     now_local = datetime.now(ZoneInfo("America/Indiana/Indianapolis"))
     ts_str = now_local.strftime("Updated: %I:%M %p — %B %d, %Y (ET)").lstrip("0")
@@ -330,6 +260,8 @@ def run_for_sheet(sheet_url: str):
 
     ticker = (ws.acell(CELL_TICKER).value or "").strip().upper()
     occ    = (ws.acell(CELL_OCC).value or "").strip().upper()
+    print(f"{label} ticker in A2: {ticker}")
+    print(f"{label} occ in A3: {occ}")
 
     headers = [[
         "ContractSymbol","Underlying","Expiry","Type","Strike","Last",
@@ -366,19 +298,30 @@ def run_for_sheet(sheet_url: str):
 
             write_option_table(ws, OUT_PUTS_HEADER_CELL, f"Puts @ {nearest}", puts_df)
             write_option_table(ws, OUT_CALLS_HEADER_CELL, f"Calls @ {nearest}", calls_df)
+            print(f"{label} wrote puts/calls for {ticker} @ {nearest}")
         else:
             safe_ws_update(ws, OUT_EXPS_START_CELL, [["No expirations available"]])
+            print(f"{label} no expirations")
     else:
         safe_ws_update(ws, OUT_EXPS_HEADER_CELL, [["(Put Ticker in A2)"]])
+        print(f"{label} no ticker in A2")
 
-# ========= Main =========
+    print(f"--- END {label} ---")
+
 def main():
-    run_for_sheet(SHEET_URL)
+    print("service account:", creds_info.get("client_email"))
+    print("WORKSHEET_NAME:", WORKSHEET_NAME)
+    print("SHEET_URL exists?", "YES" if SHEET_URL else "NO")
+    print("SHEET_URL2 exists?", "YES" if SHEET_URL2 else "NO")
+
+    run_for_sheet(SHEET_URL, "SHEET 1")
 
     if SHEET_URL2:
-        run_for_sheet(SHEET_URL2)
+        run_for_sheet(SHEET_URL2, "SHEET 2")
+    else:
+        print("SHEET_URL2 is blank, skipping sheet 2")
 
-    print("Done (Sheet 1 + Sheet 2 if provided).")
+    print("Done.")
 
 if __name__ == "__main__":
     main()
