@@ -15,7 +15,8 @@ from google.auth.exceptions import TransportError
 try:
     from gspread_formatting import (
         CellFormat, Color, TextFormat, NumberFormat,
-        format_cell_range, set_frozen, add_banding, BandingTheme, GridRange
+        format_cell_range, set_frozen, add_banding, BandingTheme, GridRange,
+        Border, Borders
     )
     _HAS_FMT = True
 except Exception:
@@ -36,7 +37,7 @@ OUT_EXPS_START_CELL      = "A8"
 OUT_SUMMARY_HEADER_CELL  = "C4"
 OUT_SUMMARY_VALUES_CELL  = "C5"
 
-OUT_ALL_HEADER_CELL      = "C7"   # main master table starts here; rows 1-2 are untouched
+OUT_ALL_HEADER_CELL      = "C7"   # master table starts here; rows 1-2 stay untouched
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 creds_info = json.loads(os.environ["GOOGLE_CREDENTIALS"])
@@ -248,7 +249,7 @@ def fetch_all_contracts_for_ticker(ticker: str) -> Tuple[List[str], pd.DataFrame
 
     return expiries, df_json_safe(master)
 
-def theme_table(ws, start_row: int, start_col: int, n_rows: int, n_cols: int, title_text: str):
+def theme_table_base(ws, start_row: int, start_col: int, n_rows: int, n_cols: int, title_text: str):
     if not _HAS_FMT or n_cols <= 0:
         return
 
@@ -347,6 +348,66 @@ def theme_table(ws, start_row: int, start_col: int, n_rows: int, n_cols: int, ti
     except Exception:
         pass
 
+def style_master_groups(ws, start_row: int, start_col: int, df: pd.DataFrame):
+    if not _HAS_FMT or df.empty:
+        return
+
+    n_cols = df.shape[1]
+    end_col = col_to_a1(start_col + n_cols - 1)
+
+    data_start_row = start_row + 2  # title row + header row above data
+
+    call_fill = CellFormat(
+        backgroundColor=Color(0.88, 0.95, 1.00),   # light blue
+        textFormat=TextFormat(foregroundColor=Color(0.05, 0.20, 0.40))
+    )
+    put_fill = CellFormat(
+        backgroundColor=Color(1.00, 0.91, 0.91),   # light red/pink
+        textFormat=TextFormat(foregroundColor=Color(0.40, 0.05, 0.05))
+    )
+    thick_break = CellFormat(
+        borders=Borders(
+            bottom=Border(style="SOLID_THICK", color=Color(0.15, 0.15, 0.15))
+        )
+    )
+
+    current_row = data_start_row
+
+    for expiry, grp in df.groupby("expiry", sort=False):
+        grp = grp.reset_index(drop=True)
+
+        call_rows = grp[grp["type"] == "CALL"]
+        put_rows  = grp[grp["type"] == "PUT"]
+
+        if not call_rows.empty:
+            call_start = current_row
+            call_end   = current_row + len(call_rows) - 1
+            try:
+                format_cell_range(ws, f"{col_to_a1(start_col)}{call_start}:{end_col}{call_end}", call_fill)
+            except Exception:
+                pass
+            current_row = call_end + 1
+
+        if not put_rows.empty:
+            put_start = current_row
+            put_end   = current_row + len(put_rows) - 1
+            try:
+                format_cell_range(ws, f"{col_to_a1(start_col)}{put_start}:{end_col}{put_end}", put_fill)
+            except Exception:
+                pass
+            current_row = put_end + 1
+
+        last_row_of_expiry = current_row - 1
+        if last_row_of_expiry >= data_start_row:
+            try:
+                format_cell_range(
+                    ws,
+                    f"{col_to_a1(start_col)}{last_row_of_expiry}:{end_col}{last_row_of_expiry}",
+                    thick_break
+                )
+            except Exception:
+                pass
+
 def write_master_table(ws, header_cell: str, title_text: str, df: pd.DataFrame):
     title_row, title_col = a1_to_rowcol(header_cell)
     df = df_json_safe(df)
@@ -361,7 +422,9 @@ def write_master_table(ws, header_cell: str, title_text: str, df: pd.DataFrame):
 
     n_rows = 1 + len(df)
     n_cols = df.shape[1]
-    theme_table(ws, start_row=title_row, start_col=title_col, n_rows=n_rows, n_cols=n_cols, title_text=title_text)
+
+    theme_table_base(ws, start_row=title_row, start_col=title_col, n_rows=n_rows, n_cols=n_cols, title_text=title_text)
+    style_master_groups(ws, start_row=title_row, start_col=title_col, df=df)
 
 def run_for_sheet(sheet_url: str, label: str):
     print(f"--- START {label} ---")
@@ -388,7 +451,7 @@ def run_for_sheet(sheet_url: str, label: str):
     print(f"{label} ticker in A2: {ticker}")
     print(f"{label} occ in A3: {occ}")
 
-    # clear only output area below row 3
+    # clear only below row 3
     clear_range(ws, "A4", end_col="Z", end_row=5000)
 
     headers = [[
